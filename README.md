@@ -76,6 +76,8 @@ SUPABASE_ANON_KEY = "your-anon-key"
 
 When these secrets are present, LinguaDesk requires authentication and enables protected project save/load. When they are absent, it runs in local demo mode. Never put a Supabase service-role key in the app or repository.
 
+See [`SECURITY.md`](SECURITY.md) and [`COMMERCIAL_ROADMAP.md`](COMMERCIAL_ROADMAP.md) before using the app with client data.
+
 ## Suggested next milestones
 
 1. Import DOCX/TXT files and split them into segments.

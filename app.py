@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 
 from supabase_client import configured as supabase_configured
-from supabase_client import latest_project, save_project, sign_in, sign_up
+from supabase_client import latest_project, refresh_session, reset_password, save_project, sign_in, sign_up
 
 
 st.set_page_config(
@@ -49,6 +49,7 @@ def init_state():
         "client_name": "",
         "delivery_notes": "",
         "supabase_access_token": "",
+        "supabase_refresh_token": "",
         "supabase_email": "",
         "auth_notice": "",
     }
@@ -375,12 +376,21 @@ def project_json():
 
 init_state()
 
+if supabase_configured() and not st.session_state.supabase_access_token and st.session_state.supabase_refresh_token:
+    try:
+        refreshed = refresh_session(st.session_state.supabase_refresh_token)
+        st.session_state.supabase_access_token = refreshed.get("access_token", "")
+        st.session_state.supabase_refresh_token = refreshed.get("refresh_token", st.session_state.supabase_refresh_token)
+    except Exception:
+        st.session_state.supabase_access_token = ""
+        st.session_state.supabase_refresh_token = ""
+
 if supabase_configured() and not st.session_state.supabase_access_token:
     st.title("🌐 LinguaDesk")
     st.info("Commercial mode is enabled. Sign in to access protected projects.")
     if st.session_state.auth_notice:
         st.success(st.session_state.auth_notice)
-    auth_tab_signin, auth_tab_signup = st.tabs(["Sign in", "Create account"])
+    auth_tab_signin, auth_tab_signup, auth_tab_reset = st.tabs(["Sign in", "Create account", "Reset password"])
     with auth_tab_signin:
         with st.form("signin_form"):
             auth_email = st.text_input("Email", key="signin_email")
@@ -391,6 +401,7 @@ if supabase_configured() and not st.session_state.supabase_access_token:
                 auth_result = sign_in(auth_email, auth_password)
                 if auth_result.get("access_token"):
                     st.session_state.supabase_access_token = auth_result["access_token"]
+                    st.session_state.supabase_refresh_token = auth_result.get("refresh_token", "")
                     st.session_state.supabase_email = auth_email
                     st.session_state.auth_notice = ""
                     st.rerun()
@@ -414,12 +425,24 @@ if supabase_configured() and not st.session_state.supabase_access_token:
                     auth_result = sign_up(signup_email, signup_password)
                     if auth_result.get("access_token"):
                         st.session_state.supabase_access_token = auth_result["access_token"]
+                        st.session_state.supabase_refresh_token = auth_result.get("refresh_token", "")
                         st.session_state.supabase_email = signup_email
                         st.rerun()
                     st.session_state.auth_notice = "Account created. Check your email, confirm the account, then use the Sign in tab."
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Account creation failed: {exc}")
+    with auth_tab_reset:
+        st.write("Supabase will email you a password-reset link.")
+        with st.form("reset_form"):
+            reset_email = st.text_input("Account email", key="reset_email")
+            reset_submit = st.form_submit_button("Send reset link")
+        if reset_submit:
+            try:
+                reset_password(reset_email)
+                st.success("If that account exists, a reset email has been sent.")
+            except Exception as exc:
+                st.error(f"Password reset failed: {exc}")
     st.stop()
 
 st.title("🌐 LinguaDesk")
@@ -468,6 +491,7 @@ with st.sidebar:
                 st.error(f"Cloud load failed: {exc}")
         if st.button("Sign out"):
             st.session_state.supabase_access_token = ""
+            st.session_state.supabase_refresh_token = ""
             st.session_state.supabase_email = ""
             st.rerun()
     project_upload = st.file_uploader("Load project JSON", type=["json"], key="project_upload")

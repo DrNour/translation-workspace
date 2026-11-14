@@ -53,6 +53,30 @@ def sign_up(email, password):
     return response.json()
 
 
+def reset_password(email):
+    url, key = config()
+    response = requests.post(
+        f"{url}/auth/v1/recover",
+        headers={"apikey": key, "Content-Type": "application/json"},
+        json={"email": email},
+        timeout=20,
+    )
+    _raise_with_message(response)
+    return response.json() if response.content else {}
+
+
+def refresh_session(refresh_token):
+    url, key = config()
+    response = requests.post(
+        f"{url}/auth/v1/token?grant_type=refresh_token",
+        headers={"apikey": key, "Content-Type": "application/json"},
+        json={"refresh_token": refresh_token},
+        timeout=20,
+    )
+    _raise_with_message(response)
+    return response.json()
+
+
 def save_project(access_token, project_name, payload):
     url, key = config()
     response = requests.post(
