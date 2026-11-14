@@ -40,6 +40,8 @@ def init_state():
         "language_pair": "English → Arabic",
         "ai_suggestion": "",
         "ai_for_segment": None,
+        "privacy_mode": "Local-only",
+        "ai_audit_log": [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -143,39 +145,80 @@ def openai_key():
         return os.getenv("OPENAI_API_KEY")
 
 
-def ai_translate(source, model, tm_context, corpus_context):
+def redact_text(text):
+    """Replace common direct identifiers before any optional external AI request."""
+    replacements = []
+    patterns = [
+        (r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "EMAIL"),
+        (r"https?://\S+", "URL"),
+        (r"\b(?:\+?\d[\d\s().-]{7,}\d)\b", "PHONE"),
+        (r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", "DATE"),
+        (r"(?:[$€£¥]\s?\d[\d,.]*|\d[\d,.]*\s?(?:USD|EUR|AED|GBP))", "AMOUNT"),
+        (r"\b(?:passport|ID|identifier|record|account)[\s:#-]*[A-Z0-9-]{4,}\b", "IDENTIFIER"),
+    ]
+    redacted = text or ""
+    for pattern, label in patterns:
+        def replace(match, label=label):
+            token = f"[{label}_{len(replacements) + 1}]"
+            replacements.append((token, match.group(0)))
+            return token
+        redacted = re.sub(pattern, replace, redacted, flags=re.IGNORECASE)
+    return redacted, replacements
+
+
+def restore_redactions(text, replacements):
+    restored = text or ""
+    for token, original in replacements:
+        restored = restored.replace(token, original)
+    return restored
+
+
+def ai_translate(source, model, tm_context, corpus_context, privacy_mode):
     key = openai_key()
+    if privacy_mode == "Local-only":
+        raise ValueError("Local-only mode blocks external AI requests.")
     if not key:
         raise ValueError("Add OPENAI_API_KEY to Streamlit secrets before using AI translation.")
+    if privacy_mode == "Redacted AI":
+        redacted_source, source_replacements = redact_text(source)
+        redacted_tm, tm_replacements = redact_text(tm_context)
+        redacted_corpus, corpus_replacements = redact_text(corpus_context)
+        replacements = source_replacements + tm_replacements + corpus_replacements
+    else:
+        redacted_source, redacted_tm, redacted_corpus, replacements = source, tm_context, corpus_context, []
+    term_payload = json.dumps(st.session_state.terms, ensure_ascii=False)
+    if privacy_mode == "Redacted AI":
+        term_payload, term_replacements = redact_text(term_payload)
+        replacements.extend(term_replacements)
     prompt = f"""Translate the source segment into {st.session_state.language_pair.split(' → ')[-1]}.
 Genre: {st.session_state.genre}.
 Preserve meaning, numbers, names, formatting, and register. Use the terminology and examples as evidence, but do not copy an example when it does not fit. Return only the translation.
 
 Approved terminology:
-{json.dumps(st.session_state.terms, ensure_ascii=False)}
+    {term_payload}
 
 Translation-memory examples:
-{tm_context or 'None'}
+{redacted_tm or 'None'}
 
 Corpus examples:
-{corpus_context or 'None'}
+{redacted_corpus or 'None'}
 
 Source segment:
-{source}"""
+{redacted_source}"""
     response = requests.post(
         "https://api.openai.com/v1/responses",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={"model": model, "instructions": "You are a careful professional translator.", "input": prompt},
+        json={"model": model, "instructions": "You are a careful professional translator. Preserve redaction placeholders exactly.", "input": prompt, "store": False},
         timeout=90,
     )
     response.raise_for_status()
     payload = response.json()
     if payload.get("output_text"):
-        return payload["output_text"].strip()
+        return restore_redactions(payload["output_text"].strip(), replacements)
     for item in payload.get("output", []):
         for content in item.get("content", []):
             if content.get("text"):
-                return content["text"].strip()
+                return restore_redactions(content["text"].strip(), replacements)
     raise ValueError("The AI service returned no translation text.")
 
 
@@ -260,6 +303,7 @@ def project_json():
         "corpus": st.session_state.corpus,
         "genre": st.session_state.genre,
         "briefing_notes": st.session_state.briefing_notes,
+        "ai_audit_log": st.session_state.ai_audit_log,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
@@ -276,6 +320,13 @@ with st.sidebar:
     if st.session_state.language_pair == "Custom":
         st.session_state.language_pair = st.text_input("Custom language pair", "Source → Target")
     st.session_state.genre = st.selectbox("Genre / assignment type", GENRES, index=GENRES.index(st.session_state.genre))
+    st.session_state.privacy_mode = st.selectbox("Privacy mode", ["Local-only", "Redacted AI", "External AI"], index=["Local-only", "Redacted AI", "External AI"].index(st.session_state.privacy_mode))
+    if st.session_state.privacy_mode == "Local-only":
+        st.caption("AI requests are blocked. TM, corpus, glossary, and QA remain available.")
+    elif st.session_state.privacy_mode == "Redacted AI":
+        st.caption("Common identifiers are replaced before an AI request. Review the preview before sending.")
+    else:
+        st.caption("The selected segment and context are sent to the configured AI provider only after confirmation.")
     st.divider()
     st.metric("Segments", len(st.session_state.segments))
     st.metric("TM entries", len(st.session_state.tm))
@@ -283,6 +334,12 @@ with st.sidebar:
     ready_count = int((segment_table()["Status"] == "Ready").sum()) if st.session_state.segments else 0
     st.metric("Ready", ready_count)
     st.download_button("Download project JSON", project_json(), f"{st.session_state.project_name.replace(' ', '_')}.json", "application/json")
+    if st.button("Delete all session project data"):
+        for key in ["segments", "terms", "tm", "corpus", "briefing_notes", "ai_audit_log"]:
+            st.session_state[key] = [] if key in {"segments", "terms", "tm", "corpus", "ai_audit_log"} else ""
+        st.session_state.ai_suggestion = ""
+        st.session_state.ai_for_segment = None
+        st.success("Session project data deleted.")
 
 tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep"])
 
@@ -316,12 +373,20 @@ with tabs[0]:
                     for item in corpus_context:
                         st.write(f"{item['Context']} · {item['Document']}")
             ai_model = st.text_input("AI model", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"), key="ai_model")
-            if st.button("Generate AI translation", type="secondary"):
+            ai_confirmed = False
+            if st.session_state.privacy_mode != "Local-only":
+                ai_confirmed = st.checkbox("I confirm this segment and its selected context may be sent to the configured AI provider.")
+                if st.session_state.privacy_mode == "Redacted AI":
+                    preview, _ = redact_text(current["source"])
+                    with st.expander("Preview data sent after redaction"):
+                        st.code(preview)
+            if st.button("Generate AI translation", type="secondary", disabled=st.session_state.privacy_mode == "Local-only" or not ai_confirmed):
                 try:
                     tm_context = "\n".join(f"{item['source']} → {item['target']} ({score}%)" for item, score in tm_suggestions)
                     corpus_text = "\n".join(item["Context"] for item in corpus_context)
-                    st.session_state.ai_suggestion = ai_translate(current["source"], ai_model, tm_context, corpus_text)
+                    st.session_state.ai_suggestion = ai_translate(current["source"], ai_model, tm_context, corpus_text, st.session_state.privacy_mode)
                     st.session_state.ai_for_segment = selected_index
+                    st.session_state.ai_audit_log.append({"time": datetime.now().isoformat(timespec="seconds"), "segment": selected_index + 1, "mode": st.session_state.privacy_mode, "model": ai_model})
                     st.success("AI suggestion generated. Review it before accepting.")
                 except Exception as exc:
                     st.error(str(exc))
@@ -453,48 +518,3 @@ with tabs[3]:
     if st.button("Fetch webpage text"):
         try:
             response = requests.get(url, timeout=15, headers={"User-Agent": "LinguaDesk/1.0"})
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header"]):
-                tag.decompose()
-            text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-            title = soup.title.get_text(strip=True) if soup.title else url
-            st.session_state.corpus.append({"title": title, "text": text, "source": url})
-            st.success("Webpage text added to corpus.")
-        except Exception as exc:
-            st.error(f"Could not fetch that page: {exc}")
-    corpus_query = st.text_input("Search corpus", placeholder="term or phrase")
-    results = corpus_matches(corpus_query)
-    for row in results[:20]:
-        st.markdown(f"**{row['title']}** · {row['source']}\n\n{row['text'][:700]}…")
-    st.caption(f"{len(results)} matching text(s). Respect terms, robots rules, copyright, and privacy when collecting texts.")
-    if st.session_state.corpus:
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            concordance_term = st.text_input("Concordance term", placeholder="Show term in context")
-            concordance_rows = concordance(concordance_term) if concordance_term else []
-            if concordance_rows:
-                st.dataframe(pd.DataFrame(concordance_rows), use_container_width=True, hide_index=True)
-        with cc2:
-            st.write("Most frequent corpus words")
-            st.dataframe(corpus_frequency(), use_container_width=True, hide_index=True)
-
-with tabs[4]:
-    st.subheader("Quality assurance")
-    st.write("This lightweight checker catches missing numbers and preferred glossary terms before delivery.")
-    if st.session_state.segments:
-        qa = segment_table()
-        issue_rows = qa[qa["Status"] == "Needs review"]
-        if issue_rows.empty:
-            st.success("No issues found in the current segments.")
-        else:
-            st.warning(f"{len(issue_rows)} segment(s) need review.")
-            st.dataframe(issue_rows, use_container_width=True, hide_index=True)
-        csv = qa.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("Download QA report (CSV)", csv, "linguadesk_qa_report.csv", "text/csv")
-    else:
-        st.info("Add segments in the Translation workspace to run QA.")
-
-with tabs[5]:
-    st.subheader("Interpreter preparation")
-    st.write("Capture context, names, numbers, abbreviations, and questions before a live assignment.")

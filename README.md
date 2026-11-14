@@ -53,6 +53,14 @@ OPENAI_API_KEY = "your-api-key"
 
 The key is used only when a translator explicitly clicks **Generate AI translation**. AI output is presented as a suggestion and is never accepted automatically.
 
+### Privacy modes
+
+- **Local-only** (default): blocks all external AI requests.
+- **Redacted AI**: replaces common emails, URLs, phone numbers, dates, amounts, and identifiers before sending the current segment and selected context.
+- **External AI**: sends the current segment and selected TM/corpus context after explicit confirmation.
+
+The app never sends the full uploaded document for translation. Sensitive projects should still be run on an approved private deployment or locally, with the privacy mode and client permissions confirmed before use.
+
 ## Suggested next milestones
 
 1. Import DOCX/TXT files and split them into segments.
