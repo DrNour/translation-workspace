@@ -1,16 +1,22 @@
 # LinguaDesk
 
-LinguaDesk is a Streamlit-based translator and interpreter workbench. It provides a small, practical starting point for terminology management, translation QA, and interpreter briefing preparation.
+LinguaDesk is a Streamlit-based translator and interpreter workbench for terminology management, corpus research, translation memory, translation QA, and interpreter briefing preparation.
 
 ## Features
 
 - Translation workspace for source and target segments
-- Preferred-term glossary with automatic terminology checks
+- Genre-aware project profiles for legal, medical, technical, financial, academic, marketing, news, literary, and conference-interpreting work
+- Preferred-term glossary with CSV, TSV, XLSX, and JSON import/export
+- Translation-memory creation from completed segments
+- TMX, CSV, TSV, XLSX, and JSON translation-memory import/export
+- Fuzzy translation-memory matching while translating
+- Local corpus uploads and searchable corpus snippets
+- Public webpage text extraction for corpus research
 - QA checks for missing or changed numbers
 - Interpreter preparation notes
 - CSV QA report export
 - JSON project export
-- No paid API or database required for the MVP
+- No paid API or database required
 
 ## Run locally
 
@@ -28,7 +34,7 @@ streamlit run app.py
 3. Choose the repository, branch, and `app.py` as the main file.
 4. Deploy.
 
-The app stores data in the current browser session. For a production version, add authentication and persistent storage.
+The app stores data in the current browser session. For a production version, add authentication, persistent storage, stronger document segmentation, and a controlled crawling queue. Only collect web content where you have permission and comply with applicable terms, robots rules, copyright, and privacy requirements.
 
 ## Suggested next milestones
 
