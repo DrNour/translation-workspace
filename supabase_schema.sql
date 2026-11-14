@@ -30,6 +30,25 @@ create policy "Users can delete their own projects"
 
 create index if not exists projects_owner_updated_idx on public.projects(owner_id, updated_at desc);
 
+insert into storage.buckets (id, name, public)
+values ('project-files', 'project-files', false)
+on conflict (id) do nothing;
+
+drop policy if exists "Authenticated users can upload project files" on storage.objects;
+create policy "Authenticated users can upload project files" on storage.objects
+    for insert to authenticated
+    with check (bucket_id = 'project-files');
+
+drop policy if exists "Authenticated users can read project files" on storage.objects;
+create policy "Authenticated users can read project files" on storage.objects
+    for select to authenticated
+    using (bucket_id = 'project-files');
+
+drop policy if exists "Authenticated users can update project files" on storage.objects;
+create policy "Authenticated users can update project files" on storage.objects
+    for update to authenticated
+    using (bucket_id = 'project-files');
+
 create table if not exists public.workspaces (
     id uuid primary key default gen_random_uuid(),
     name text not null,

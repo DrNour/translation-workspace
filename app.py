@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 
 from supabase_client import configured as supabase_configured
-from supabase_client import create_invitation, create_workspace, latest_project, list_workspaces, refresh_session, reset_password, save_project, sign_in, sign_up
+from supabase_client import create_invitation, create_workspace, latest_project, list_project_files, list_workspaces, refresh_session, reset_password, save_project, sign_in, sign_up, upload_project_file
 
 
 st.set_page_config(
@@ -636,9 +636,40 @@ scale = {"Small": "0.92", "Standard": "1", "Large": "1.12", "Extra large": "1.25
 contrast_css = "body { filter: contrast(1.12); }" if st.session_state.high_contrast else ""
 st.markdown(f"<style>html {{ font-size: {scale}em; }} {contrast_css}</style>", unsafe_allow_html=True)
 
-tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep", "Review & delivery", "Analytics & delivery"])
+tabs = st.tabs(["Dashboard & files", "Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep", "Review & delivery", "Analytics & delivery"])
 
 with tabs[0]:
+    st.subheader("Project dashboard")
+    dashboard_table = segment_table()
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Segments", len(st.session_state.segments))
+    d2.metric("Translated", int((dashboard_table["Target"].fillna("").str.strip() != "").sum()) if not dashboard_table.empty else 0)
+    d3.metric("Approved", int((dashboard_table["Status"] == "Approved").sum()) if not dashboard_table.empty else 0)
+    d4.metric("Review comments", sum(bool(x.get("reviewer_comment", "").strip()) for x in st.session_state.segments))
+    st.write(f"**Client / agency:** {st.session_state.client_name or 'Not specified'}")
+    st.write(f"**Language pair:** {st.session_state.language_pair} · **Genre:** {st.session_state.genre}")
+    if st.session_state.supabase_access_token:
+        st.subheader("Private project files")
+        st.caption("Uploaded files are stored in the private Supabase project-files bucket.")
+        project_file = st.file_uploader("Upload source, reference, or delivery file", type=["docx", "pdf", "txt", "csv", "tsv", "xlf", "xliff", "tmx", "tbx"], key="project_file_upload")
+        if project_file and st.button("Upload private file"):
+            try:
+                upload_project_file(st.session_state.supabase_access_token, project_file.name, project_file.getvalue(), project_file.type or "application/octet-stream")
+                st.success(f"Uploaded {project_file.name}.")
+            except Exception as exc:
+                st.error(f"File upload failed: {exc}")
+        try:
+            project_files = list_project_files(st.session_state.supabase_access_token)
+            if project_files:
+                st.dataframe(pd.DataFrame(project_files), use_container_width=True, hide_index=True)
+            else:
+                st.info("No private project files uploaded yet.")
+        except Exception as exc:
+            st.warning(f"Could not list private files: {exc}")
+    else:
+        st.info("Sign in with Supabase to enable private cloud file storage.")
+
+with tabs[1]:
     st.subheader(f"{st.session_state.project_name} · {st.session_state.language_pair} · {st.session_state.genre}")
     st.write("Edit, classify, and review segments in a CAT-style workflow. Glossary, TM, and QA signals update automatically.")
     document_upload = st.file_uploader("Upload document to segment", type=["txt", "docx", "pdf", "csv", "tsv", "xlf", "xliff"], key="document_upload")
@@ -743,7 +774,7 @@ with tabs[0]:
     else:
         st.info("Your translation segments will appear here.")
 
-with tabs[1]:
+with tabs[2]:
     st.subheader("Terminology glossary")
     st.write("Keep preferred terms visible while you work. The QA checker flags source terms whose approved target is missing.")
     glossary_upload = st.file_uploader("Upload glossary (TBX, CSV, TSV, XLSX, JSON)", type=["tbx", "csv", "tsv", "xlsx", "xls", "json"], key="glossary_upload")
@@ -777,7 +808,7 @@ with tabs[1]:
             st.session_state.terms = [x for x in st.session_state.terms if x["source"] != source_to_remove]
             st.rerun()
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("Translation memory")
     st.write("Create a reusable TM from completed segments or import TMX/CSV/XLSX/JSON.")
     if st.button("Add completed segments to TM"):
@@ -815,7 +846,7 @@ with tabs[2]:
         st.dataframe(pd.DataFrame(st.session_state.tm), use_container_width=True, hide_index=True)
         st.download_button("Export TM as CSV", pd.DataFrame(st.session_state.tm).to_csv(index=False).encode("utf-8-sig"), "linguadesk_tm.csv", "text/csv")
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("Corpus research and text collection")
     st.write("Upload local reference texts or extract readable text from public webpages for terminology research.")
     corpus_upload = st.file_uploader("Upload corpus text", type=["txt", "csv", "json", "docx"], key="corpus_upload")
@@ -860,7 +891,7 @@ with tabs[3]:
             st.write("Most frequent corpus words")
             st.dataframe(corpus_frequency(), use_container_width=True, hide_index=True)
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("Quality assurance")
     st.write("This lightweight checker catches missing numbers and preferred glossary terms before delivery.")
     if st.session_state.segments:
@@ -876,7 +907,7 @@ with tabs[4]:
     else:
         st.info("Add segments in the Translation workspace to run QA.")
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("Interpreter preparation")
     st.write("Capture context, names, numbers, abbreviations, and questions before a live assignment.")
     st.session_state.interpreter_assignment = st.text_input("Assignment / event", st.session_state.interpreter_assignment)
@@ -935,7 +966,7 @@ with tabs[5]:
         st.dataframe(pd.DataFrame(st.session_state.interpreter_turns), use_container_width=True, hide_index=True)
         st.download_button("Export turn log", pd.DataFrame(st.session_state.interpreter_turns).to_csv(index=False).encode("utf-8-sig"), "interpreter_turn_log.csv", "text/csv")
 
-with tabs[6]:
+with tabs[7]:
     st.subheader("Review and delivery")
     st.write("Reviewers and clients can filter segments, leave comments, and approve delivery items.")
     review_rows = []
@@ -966,7 +997,7 @@ with tabs[6]:
                     segment["status"] = "Approved"
                 st.success("Review saved.")
 
-with tabs[7]:
+with tabs[8]:
     st.subheader("Translator analytics and delivery")
     table = segment_table()
     total_words = int(table["Words"].sum()) if not table.empty else 0
@@ -998,3 +1029,9 @@ with tabs[7]:
     st.subheader("Delivery notes")
     st.session_state.delivery_notes = st.text_area("Client-facing delivery notes", st.session_state.delivery_notes, height=120)
     st.download_button("Download delivery package report", (f"Project: {st.session_state.project_name}\nClient: {st.session_state.client_name}\nLanguage pair: {st.session_state.language_pair}\nGenre: {st.session_state.genre}\nSource words: {total_words}\nTranslated segments: {translated}\nApproved segments: {approved}\nQA flags: {flagged}\n\nNotes:\n{st.session_state.delivery_notes}\n").encode("utf-8"), "delivery_report.txt", "text/plain")
+    if st.session_state.revisions:
+        with st.expander("Revision history"):
+            st.dataframe(pd.DataFrame(st.session_state.revisions), use_container_width=True, hide_index=True)
+
+st.divider()
+st.caption("LinguaDesk MVP · Designed for translator and interpreter workflows · No data leaves this app")

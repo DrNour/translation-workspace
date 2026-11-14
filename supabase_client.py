@@ -128,3 +128,28 @@ def create_invitation(access_token, workspace_id, email, role):
     )
     response.raise_for_status()
     return response.json()[0]
+
+
+def upload_project_file(access_token, file_name, content, mime_type="application/octet-stream"):
+    url, key = config()
+    safe_name = file_name.replace("/", "_").replace("\\", "_")
+    response = requests.post(
+        f"{url}/storage/v1/object/project-files/{safe_name}",
+        headers={"apikey": key, "Authorization": f"Bearer {access_token}", "Content-Type": mime_type, "x-upsert": "true"},
+        data=content,
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def list_project_files(access_token):
+    url, key = config()
+    response = requests.post(
+        f"{url}/storage/v1/object/list/project-files",
+        headers={"apikey": key, "Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        json={"prefix": "", "limit": 100, "offset": 0, "sortBy": {"column": "created_at", "order": "desc"}},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
