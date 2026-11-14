@@ -66,7 +66,7 @@ def init_state():
         "language_pair": "English → Arabic",
         "ai_suggestion": "",
         "ai_for_segment": None,
-        "privacy_mode": "Local-only",
+        "privacy_mode": "Privacy-first",
         "ai_audit_log": [],
         "revisions": [],
         "client_name": "",
@@ -76,6 +76,8 @@ def init_state():
         "workspace_name": "",
         "font_scale": "Standard",
         "high_contrast": False,
+        "interpreter_turns": [],
+        "interpreter_assignment": "",
         "supabase_access_token": "",
         "supabase_refresh_token": "",
         "supabase_email": "",
@@ -257,8 +259,8 @@ def restore_redactions(text, replacements):
 
 def ai_translate(source, model, tm_context, corpus_context, privacy_mode):
     key = openai_key()
-    if privacy_mode == "Local-only":
-        raise ValueError("Local-only mode blocks external AI requests.")
+    if privacy_mode == "Privacy-first":
+        raise ValueError("Privacy-first mode blocks external AI requests.")
     if not key:
         raise ValueError("Add OPENAI_API_KEY to Streamlit secrets before using AI translation.")
     if privacy_mode == "Redacted AI":
@@ -302,6 +304,22 @@ Source segment:
             if content.get("text"):
                 return restore_redactions(content["text"].strip(), replacements)
     raise ValueError("The AI service returned no translation text.")
+
+
+def transcribe_audio(audio_file, language_hint=""):
+    key = openai_key()
+    if not key:
+        raise ValueError("Add OPENAI_API_KEY to use cloud transcription.")
+    audio_file.seek(0)
+    response = requests.post(
+        "https://api.openai.com/v1/audio/transcriptions",
+        headers={"Authorization": f"Bearer {key}"},
+        files={"file": (audio_file.name or "recording.wav", audio_file, "audio/wav")},
+        data={"model": "whisper-1", "language": language_hint or ""},
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json().get("text", "").strip()
 
 
 def import_table(upload):
@@ -486,13 +504,13 @@ with st.sidebar:
     if st.session_state.language_pair == "Custom":
         st.session_state.language_pair = st.text_input("Custom language pair", "Source → Target")
     st.session_state.genre = st.selectbox("Genre / assignment type", GENRES, index=GENRES.index(st.session_state.genre))
-    st.session_state.privacy_mode = st.selectbox("Privacy mode", ["Local-only", "Redacted AI", "External AI"], index=["Local-only", "Redacted AI", "External AI"].index(st.session_state.privacy_mode))
-    if st.session_state.privacy_mode == "Local-only":
-        st.caption("AI requests are blocked. TM, corpus, glossary, and QA remain available.")
-    elif st.session_state.privacy_mode == "Redacted AI":
-        st.caption("Common identifiers are replaced before an AI request. Review the preview before sending.")
+    if st.session_state.privacy_mode in {"Local-only", "Redacted AI"}:
+        st.session_state.privacy_mode = "Privacy-first"
+    st.session_state.privacy_mode = st.selectbox("Data mode", ["Privacy-first", "Standard"], index=["Privacy-first", "Standard"].index(st.session_state.privacy_mode))
+    if st.session_state.privacy_mode == "Privacy-first":
+        st.caption("No text or audio is sent to external AI services. TM, corpus, glossary, and QA remain available.")
     else:
-        st.caption("The selected segment and context are sent to the configured AI provider only after confirmation.")
+        st.caption("AI translation and transcription are available after explicit confirmation.")
     st.subheader("Accessibility")
     st.session_state.font_scale = st.selectbox("Text size", ["Small", "Standard", "Large", "Extra large"], index=["Small", "Standard", "Large", "Extra large"].index(st.session_state.font_scale))
     st.session_state.high_contrast = st.checkbox("High-contrast interface", value=st.session_state.high_contrast)
@@ -624,13 +642,9 @@ with tabs[0]:
                         st.write(f"{item['Context']} · {item['Document']}")
             ai_model = st.text_input("AI model", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"), key="ai_model")
             ai_confirmed = False
-            if st.session_state.privacy_mode != "Local-only":
+            if st.session_state.privacy_mode != "Privacy-first":
                 ai_confirmed = st.checkbox("I confirm this segment and its selected context may be sent to the configured AI provider.")
-                if st.session_state.privacy_mode == "Redacted AI":
-                    preview, _ = redact_text(current["source"])
-                    with st.expander("Preview data sent after redaction"):
-                        st.code(preview)
-            if st.button("Generate AI translation", type="secondary", disabled=st.session_state.privacy_mode == "Local-only" or not ai_confirmed):
+            if st.button("Generate AI translation", type="secondary", disabled=st.session_state.privacy_mode == "Privacy-first" or not ai_confirmed):
                 try:
                     tm_context = "\n".join(f"{item['source']} → {item['target']} ({score}%)" for item, score in tm_suggestions)
                     corpus_text = "\n".join(item["Context"] for item in corpus_context)
@@ -810,6 +824,7 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Interpreter preparation")
     st.write("Capture context, names, numbers, abbreviations, and questions before a live assignment.")
+    st.session_state.interpreter_assignment = st.text_input("Assignment / event", st.session_state.interpreter_assignment)
     st.session_state.briefing_notes = st.text_area(
         "Briefing notes",
         value=st.session_state.briefing_notes,
@@ -819,6 +834,44 @@ with tabs[5]:
     c1, c2 = st.columns(2)
     c1.download_button("Download briefing notes", st.session_state.briefing_notes.encode("utf-8"), "interpreter_briefing.txt", "text/plain")
     c2.info("Tip: build a glossary from the briefing before the assignment starts.")
+    st.divider()
+    st.subheader("Interpreter Console")
+    st.caption("Use this workspace for consecutive notes, speaker turns, live terminology, and optional dictation.")
+    ic1, ic2 = st.columns([1, 2])
+    with ic1:
+        speaker = st.text_input("Speaker", placeholder="Name or role")
+        turn_kind = st.selectbox("Turn type", ["Source turn", "Interpretation", "Question", "Number / name", "Action item"])
+        live_term = st.text_input("Quick glossary search", placeholder="term")
+        if live_term:
+            for term, score in process.extract(live_term, [x["source"] for x in st.session_state.terms], scorer=fuzz.partial_ratio, limit=5):
+                matching = next(x for x in st.session_state.terms if x["source"] == term)
+                st.write(f"{score}% · **{matching['source']}** → {matching['target']}")
+    with ic2:
+        turn_note = st.text_area("Live note", height=130, placeholder="Capture the idea, not every word…")
+        if st.button("Add turn note") and turn_note.strip():
+            st.session_state.interpreter_turns.append({"time": datetime.now().strftime("%H:%M:%S"), "speaker": speaker or "Unassigned", "type": turn_kind, "note": turn_note.strip()})
+            st.success("Turn added.")
+    with st.expander("Dictation"):
+        st.write("Record a note directly from your microphone. In Privacy-first mode, the recording stays available for playback/download and is not sent to a cloud service.")
+        audio = st.audio_input("Record interpreter note", sample_rate=16000, key="interpreter_audio")
+        if audio:
+            st.audio(audio)
+            st.download_button("Download recording", audio.getvalue(), "interpreter_note.wav", "audio/wav")
+            if st.session_state.privacy_mode == "Privacy-first":
+                st.info("Privacy-first mode is active. Cloud transcription is disabled.")
+            else:
+                transcript_language = st.text_input("Language hint (optional)", placeholder="en or ar", key="transcript_language")
+                if st.button("Transcribe recording"):
+                    try:
+                        transcript = transcribe_audio(audio, transcript_language)
+                        st.session_state.interpreter_turns.append({"time": datetime.now().strftime("%H:%M:%S"), "speaker": speaker or "Unassigned", "type": "Dictation", "note": transcript})
+                        st.success("Transcript added to the turn log.")
+                    except Exception as exc:
+                        st.error(f"Transcription failed: {exc}")
+    if st.session_state.interpreter_turns:
+        st.subheader("Turn log")
+        st.dataframe(pd.DataFrame(st.session_state.interpreter_turns), use_container_width=True, hide_index=True)
+        st.download_button("Export turn log", pd.DataFrame(st.session_state.interpreter_turns).to_csv(index=False).encode("utf-8-sig"), "interpreter_turn_log.csv", "text/csv")
 
 with tabs[6]:
     st.subheader("Review and delivery")
