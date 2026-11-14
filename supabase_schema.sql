@@ -11,6 +11,11 @@ create table if not exists public.projects (
 
 alter table public.projects enable row level security;
 
+drop policy if exists "Users can read their own projects" on public.projects;
+drop policy if exists "Users can create their own projects" on public.projects;
+drop policy if exists "Users can update their own projects" on public.projects;
+drop policy if exists "Users can delete their own projects" on public.projects;
+
 create policy "Users can read their own projects"
     on public.projects for select using (auth.uid() = owner_id);
 

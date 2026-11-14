@@ -67,7 +67,7 @@ The app never sends the full uploaded document for translation. Sensitive projec
 
 ### Commercial Supabase mode
 
-The repository includes `supabase_schema.sql` and an optional Supabase authentication/cloud-project layer. Run the SQL file in the Supabase SQL Editor, then add these values to Streamlit Cloud Secrets:
+The repository includes `supabase_schema.sql` and an optional Supabase authentication/cloud-project layer. Run the SQL file in the Supabase SQL Editor. The schema is safe to rerun, then add these values to Streamlit Cloud Secrets:
 
 ```toml
 SUPABASE_URL = "https://your-project.supabase.co"
