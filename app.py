@@ -50,6 +50,7 @@ def init_state():
         "delivery_notes": "",
         "supabase_access_token": "",
         "supabase_email": "",
+        "auth_notice": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -377,21 +378,48 @@ init_state()
 if supabase_configured() and not st.session_state.supabase_access_token:
     st.title("🌐 LinguaDesk")
     st.info("Commercial mode is enabled. Sign in to access protected projects.")
-    with st.form("auth_form"):
-        auth_email = st.text_input("Email")
-        auth_password = st.text_input("Password", type="password")
-        auth_action = st.radio("Account action", ["Sign in", "Create account"], horizontal=True)
-        auth_submit = st.form_submit_button(auth_action, type="primary")
-    if auth_submit:
-        try:
-            auth_result = sign_up(auth_email, auth_password) if auth_action == "Create account" else sign_in(auth_email, auth_password)
-            if auth_result.get("access_token"):
-                st.session_state.supabase_access_token = auth_result["access_token"]
-                st.session_state.supabase_email = auth_email
-                st.rerun()
-            st.success("Check your email to confirm the account, then sign in.")
-        except Exception as exc:
-            st.error(f"Authentication failed: {exc}")
+    if st.session_state.auth_notice:
+        st.success(st.session_state.auth_notice)
+    auth_tab_signin, auth_tab_signup = st.tabs(["Sign in", "Create account"])
+    with auth_tab_signin:
+        with st.form("signin_form"):
+            auth_email = st.text_input("Email", key="signin_email")
+            auth_password = st.text_input("Password", type="password", key="signin_password")
+            auth_submit = st.form_submit_button("Sign in", type="primary")
+        if auth_submit:
+            try:
+                auth_result = sign_in(auth_email, auth_password)
+                if auth_result.get("access_token"):
+                    st.session_state.supabase_access_token = auth_result["access_token"]
+                    st.session_state.supabase_email = auth_email
+                    st.session_state.auth_notice = ""
+                    st.rerun()
+                st.error("No active session was returned. Confirm your email first.")
+            except Exception as exc:
+                st.error(f"Sign-in failed: {exc}")
+    with auth_tab_signup:
+        st.write("Create a LinguaDesk account for protected cloud projects.")
+        with st.form("signup_form"):
+            signup_email = st.text_input("Email", key="signup_email")
+            signup_password = st.text_input("Password", type="password", key="signup_password")
+            signup_password_confirm = st.text_input("Confirm password", type="password", key="signup_password_confirm")
+            signup_submit = st.form_submit_button("Create account", type="primary")
+        if signup_submit:
+            if signup_password != signup_password_confirm:
+                st.error("The passwords do not match.")
+            elif len(signup_password) < 6:
+                st.error("Use a password with at least 6 characters.")
+            else:
+                try:
+                    auth_result = sign_up(signup_email, signup_password)
+                    if auth_result.get("access_token"):
+                        st.session_state.supabase_access_token = auth_result["access_token"]
+                        st.session_state.supabase_email = signup_email
+                        st.rerun()
+                    st.session_state.auth_notice = "Account created. Check your email, confirm the account, then use the Sign in tab."
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Account creation failed: {exc}")
     st.stop()
 
 st.title("🌐 LinguaDesk")
