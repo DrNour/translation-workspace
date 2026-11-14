@@ -42,6 +42,9 @@ def init_state():
         "ai_for_segment": None,
         "privacy_mode": "Local-only",
         "ai_audit_log": [],
+        "revisions": [],
+        "client_name": "",
+        "delivery_notes": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -108,6 +111,48 @@ def add_segment(source, target):
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         })
+
+
+def record_revision(index, old_target, new_target, action="manual edit"):
+    if old_target != new_target:
+        st.session_state.revisions.append({
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "segment": index + 1,
+            "action": action,
+            "old_target": old_target,
+            "new_target": new_target,
+        })
+
+
+def import_xliff(upload):
+    root = ElementTree.fromstring(upload.getvalue())
+    rows = []
+    for unit in root.iter():
+        if unit.tag.split("}")[-1] != "trans-unit":
+            continue
+        source = next((x for x in unit if x.tag.split("}")[-1] == "source"), None)
+        target = next((x for x in unit if x.tag.split("}")[-1] == "target"), None)
+        if source is not None:
+            rows.append((" ".join(source.itertext()).strip(), " ".join(target.itertext()).strip() if target is not None else ""))
+    return rows
+
+
+def export_xliff():
+    root = ElementTree.Element("xliff", {"version": "1.2"})
+    file_node = ElementTree.SubElement(root, "file", {"source-language": st.session_state.language_pair.split(" → ")[0], "target-language": st.session_state.language_pair.split(" → ")[-1], "datatype": "x- LinguaDesk"})
+    body = ElementTree.SubElement(file_node, "body")
+    for index, segment in enumerate(st.session_state.segments, 1):
+        unit = ElementTree.SubElement(body, "trans-unit", {"id": str(index)})
+        ElementTree.SubElement(unit, "source").text = segment["source"]
+        ElementTree.SubElement(unit, "target").text = segment.get("target", "")
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def load_project(payload):
+    data = json.loads(payload.decode("utf-8"))
+    for key in ["segments", "terms", "tm", "corpus", "briefing_notes", "genre", "language_pair", "client_name", "delivery_notes"]:
+        if key in data:
+            st.session_state[key] = data[key]
 
 
 def split_into_segments(text):
@@ -315,6 +360,9 @@ def project_json():
         "genre": st.session_state.genre,
         "briefing_notes": st.session_state.briefing_notes,
         "ai_audit_log": st.session_state.ai_audit_log,
+        "revisions": st.session_state.revisions,
+        "client_name": st.session_state.client_name,
+        "delivery_notes": st.session_state.delivery_notes,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
@@ -327,6 +375,7 @@ st.caption("A focused workbench for translators and interpreters")
 with st.sidebar:
     st.header("Project")
     st.session_state.project_name = st.text_input("Project name", st.session_state.project_name)
+    st.session_state.client_name = st.text_input("Client / agency", st.session_state.client_name)
     st.session_state.language_pair = st.selectbox("Language pair", ["English → Arabic", "Arabic → English", "French → English", "Custom"], index=["English → Arabic", "Arabic → English", "French → English", "Custom"].index(st.session_state.language_pair))
     if st.session_state.language_pair == "Custom":
         st.session_state.language_pair = st.text_input("Custom language pair", "Source → Target")
@@ -345,25 +394,39 @@ with st.sidebar:
     ready_count = int((segment_table()["Status"] == "Ready").sum()) if st.session_state.segments else 0
     st.metric("Ready", ready_count)
     st.download_button("Download project JSON", project_json(), f"{st.session_state.project_name.replace(' ', '_')}.json", "application/json")
+    project_upload = st.file_uploader("Load project JSON", type=["json"], key="project_upload")
+    if project_upload and st.button("Load project"):
+        try:
+            load_project(project_upload.getvalue())
+            st.success("Project loaded.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not load project: {exc}")
     if st.button("Delete all session project data"):
-        for key in ["segments", "terms", "tm", "corpus", "briefing_notes", "ai_audit_log"]:
+        for key in ["segments", "terms", "tm", "corpus", "briefing_notes", "ai_audit_log", "revisions", "client_name", "delivery_notes"]:
             st.session_state[key] = [] if key in {"segments", "terms", "tm", "corpus", "ai_audit_log"} else ""
         st.session_state.ai_suggestion = ""
         st.session_state.ai_for_segment = None
         st.success("Session project data deleted.")
 
-tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep"])
+tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep", "Analytics & delivery"])
 
 with tabs[0]:
     st.subheader(f"{st.session_state.project_name} · {st.session_state.language_pair} · {st.session_state.genre}")
     st.write("Edit, classify, and review segments in a CAT-style workflow. Glossary, TM, and QA signals update automatically.")
-    document_upload = st.file_uploader("Upload document to segment", type=["txt", "docx", "pdf", "csv", "tsv"], key="document_upload")
+    document_upload = st.file_uploader("Upload document to segment", type=["txt", "docx", "pdf", "csv", "tsv", "xlf", "xliff"], key="document_upload")
     if document_upload and st.button("Import document as segments"):
         try:
-            text = extract_document_text(document_upload)
-            imported_segments = split_into_segments(text)
-            for segment_text in imported_segments:
-                add_segment(segment_text, "")
+            if document_upload.name.lower().endswith((".xlf", ".xliff")):
+                imported_pairs = import_xliff(document_upload)
+                for source_text, target_text in imported_pairs:
+                    add_segment(source_text, target_text)
+                imported_segments = [x[0] for x in imported_pairs]
+            else:
+                text = extract_document_text(document_upload)
+                imported_segments = split_into_segments(text)
+                for segment_text in imported_segments:
+                    add_segment(segment_text, "")
             st.success(f"Imported {len(imported_segments)} segments from {document_upload.name}.")
         except Exception as exc:
             st.error(f"Could not import document: {exc}")
@@ -411,11 +474,13 @@ with tabs[0]:
             if save_segment:
                 if edited_target != current["target"]:
                     current["edit_count"] = current.get("edit_count", 0) + 1
+                    record_revision(selected_index, current["target"], edited_target)
                 current["target"], current["status"], current["effort"] = edited_target, new_status, new_effort
                 current["last_edited_at"] = datetime.now().isoformat(timespec="seconds")
                 st.success("Segment saved.")
             st.caption(f"Source: {current['source']} · Edits: {current.get('edit_count', 0)}")
     st.download_button("Export translated document (DOCX)", export_docx(), "linguadesk_translation.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    st.download_button("Export bilingual XLIFF", export_xliff(), "linguadesk_project.xliff", "application/xml")
     with st.form("segment_form", clear_on_submit=True):
         source = st.text_area("Source segment", height=100, placeholder="Paste a sentence or segment here…")
         target = st.text_area("Translation", height=100, placeholder="Write or paste the translation here…")
@@ -578,3 +643,41 @@ with tabs[5]:
     c1.download_button("Download briefing notes", st.session_state.briefing_notes.encode("utf-8"), "interpreter_briefing.txt", "text/plain")
     c2.info("Tip: build a glossary from the briefing before the assignment starts.")
 
+with tabs[6]:
+    st.subheader("Translator analytics and delivery")
+    table = segment_table()
+    total_words = int(table["Words"].sum()) if not table.empty else 0
+    translated = int((table["Target"].fillna("").str.strip() != "").sum()) if not table.empty else 0
+    approved = int((table["Status"] == "Approved").sum()) if not table.empty else 0
+    flagged = int(table["Issues"].fillna("").str.strip().ne("").sum()) if not table.empty else 0
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Source words", total_words)
+    k2.metric("Translated", f"{translated}/{len(st.session_state.segments)}")
+    k3.metric("Approved", approved)
+    k4.metric("QA flags", flagged)
+    if not table.empty:
+        st.dataframe(table[["#", "Words", "Status", "Effort", "Genre"]], use_container_width=True, hide_index=True)
+    st.subheader("Search and replace")
+    with st.form("search_replace_form"):
+        search_text = st.text_input("Find in targets")
+        replace_text = st.text_input("Replace with")
+        replace_all = st.form_submit_button("Replace in all target segments")
+    if replace_all and search_text:
+        changed = 0
+        for index, segment in enumerate(st.session_state.segments):
+            new_target = segment.get("target", "").replace(search_text, replace_text)
+            if new_target != segment.get("target", ""):
+                record_revision(index, segment.get("target", ""), new_target, "search and replace")
+                segment["target"] = new_target
+                segment["edit_count"] = segment.get("edit_count", 0) + 1
+                changed += 1
+        st.success(f"Updated {changed} segment(s).")
+    st.subheader("Delivery notes")
+    st.session_state.delivery_notes = st.text_area("Client-facing delivery notes", st.session_state.delivery_notes, height=120)
+    st.download_button("Download delivery package report", (f"Project: {st.session_state.project_name}\nClient: {st.session_state.client_name}\nLanguage pair: {st.session_state.language_pair}\nGenre: {st.session_state.genre}\nSource words: {total_words}\nTranslated segments: {translated}\nApproved segments: {approved}\nQA flags: {flagged}\n\nNotes:\n{st.session_state.delivery_notes}\n").encode("utf-8"), "delivery_report.txt", "text/plain")
+    if st.session_state.revisions:
+        with st.expander("Revision history"):
+            st.dataframe(pd.DataFrame(st.session_state.revisions), use_container_width=True, hide_index=True)
+
+st.divider()
+st.caption("LinguaDesk MVP · Designed for translator and interpreter workflows · No data leaves this app")
