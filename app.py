@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 
 from supabase_client import configured as supabase_configured
-from supabase_client import latest_project, refresh_session, reset_password, save_project, sign_in, sign_up
+from supabase_client import create_invitation, create_workspace, latest_project, list_workspaces, refresh_session, reset_password, save_project, sign_in, sign_up
 
 
 st.set_page_config(
@@ -48,6 +48,9 @@ def init_state():
         "revisions": [],
         "client_name": "",
         "delivery_notes": "",
+        "workspaces": [],
+        "workspace_id": "",
+        "workspace_name": "",
         "supabase_access_token": "",
         "supabase_refresh_token": "",
         "supabase_email": "",
@@ -472,6 +475,34 @@ with st.sidebar:
     st.download_button("Download project JSON", project_json(), f"{st.session_state.project_name.replace(' ', '_')}.json", "application/json")
     if st.session_state.supabase_access_token:
         st.caption(f"Signed in as {st.session_state.supabase_email}")
+        try:
+            st.session_state.workspaces = list_workspaces(st.session_state.supabase_access_token)
+        except Exception as exc:
+            st.warning(f"Could not load workspaces: {exc}")
+        if st.session_state.workspaces:
+            workspace_labels = [f"{w['name']} ({w['id'][:8]})" for w in st.session_state.workspaces]
+            workspace_choice = st.selectbox("Workspace", workspace_labels, key="workspace_choice")
+            st.session_state.workspace_id = st.session_state.workspaces[workspace_labels.index(workspace_choice)]["id"]
+        with st.expander("Create workspace"):
+            new_workspace_name = st.text_input("Workspace name", key="new_workspace_name")
+            if st.button("Create workspace") and new_workspace_name.strip():
+                try:
+                    created = create_workspace(st.session_state.supabase_access_token, new_workspace_name.strip())
+                    st.session_state.workspace_id = created["id"]
+                    st.success("Workspace created.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Workspace creation failed: {exc}")
+        if st.session_state.workspace_id:
+            with st.expander("Invite team member"):
+                invite_email = st.text_input("Member email", key="invite_email")
+                invite_role = st.selectbox("Role", ["manager", "translator", "reviewer", "client"], key="invite_role")
+                if st.button("Create invitation") and invite_email.strip():
+                    try:
+                        invitation = create_invitation(st.session_state.supabase_access_token, st.session_state.workspace_id, invite_email, invite_role)
+                        st.success(f"Invitation record created for {invitation['email']} as {invitation['role']}.")
+                    except Exception as exc:
+                        st.error(f"Invitation failed: {exc}")
         if st.button("Save project to cloud"):
             try:
                 save_project(st.session_state.supabase_access_token, st.session_state.project_name, json.loads(project_json().decode("utf-8")))

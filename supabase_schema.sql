@@ -54,9 +54,20 @@ create table if not exists public.audit_events (
     created_at timestamptz not null default now()
 );
 
+create table if not exists public.workspace_invitations (
+    id uuid primary key default gen_random_uuid(),
+    workspace_id uuid not null references public.workspaces(id) on delete cascade,
+    email text not null,
+    role text not null check (role in ('manager', 'translator', 'reviewer', 'client')),
+    status text not null default 'pending' check (status in ('pending', 'accepted', 'revoked')),
+    invited_by uuid not null references auth.users(id) on delete cascade default auth.uid(),
+    created_at timestamptz not null default now()
+);
+
 alter table public.workspaces enable row level security;
 alter table public.workspace_members enable row level security;
 alter table public.audit_events enable row level security;
+alter table public.workspace_invitations enable row level security;
 
 drop policy if exists "Workspace members can read workspaces" on public.workspaces;
 create policy "Workspace members can read workspaces" on public.workspaces for select
@@ -67,6 +78,15 @@ create policy "Workspace owners can create workspaces" on public.workspaces for 
 
 drop policy if exists "Members can read membership" on public.workspace_members;
 create policy "Members can read membership" on public.workspace_members for select using (user_id = auth.uid());
+
+drop policy if exists "Workspace owners can add membership" on public.workspace_members;
+create policy "Workspace owners can add membership" on public.workspace_members for insert
+    with check (exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_id = auth.uid()));
+
+drop policy if exists "Workspace owners can manage invitations" on public.workspace_invitations;
+create policy "Workspace owners can manage invitations" on public.workspace_invitations for all
+    using (exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_id = auth.uid()))
+    with check (exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_id = auth.uid()));
 
 drop policy if exists "Members can read audit events" on public.audit_events;
 create policy "Members can read audit events" on public.audit_events for select using (actor_id = auth.uid());
