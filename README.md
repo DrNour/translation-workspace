@@ -19,6 +19,8 @@ LinguaDesk is a Streamlit-based translator and interpreter workbench for termino
 - Project JSON save/load for portable project snapshots
 - Translator analytics and delivery reports
 - Revision history and global target search/replace
+- Adjustable text size, high-contrast mode, and browser speech playback
+- One-click TM application and reviewer/client approval workflow
 - Per-segment TM, corpus, and AI translation suggestions
 - Optional OpenAI translation through a Streamlit secret (`OPENAI_API_KEY`)
 - Concordance-in-context search and corpus word-frequency analysis

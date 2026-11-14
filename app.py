@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 
@@ -73,6 +74,8 @@ def init_state():
         "workspaces": [],
         "workspace_id": "",
         "workspace_name": "",
+        "font_scale": "Standard",
+        "high_contrast": False,
         "supabase_access_token": "",
         "supabase_refresh_token": "",
         "supabase_email": "",
@@ -142,6 +145,8 @@ def add_segment(source, target):
             "edit_count": 0,
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "review_status": "Pending",
+            "reviewer_comment": "",
         })
 
 
@@ -488,6 +493,9 @@ with st.sidebar:
         st.caption("Common identifiers are replaced before an AI request. Review the preview before sending.")
     else:
         st.caption("The selected segment and context are sent to the configured AI provider only after confirmation.")
+    st.subheader("Accessibility")
+    st.session_state.font_scale = st.selectbox("Text size", ["Small", "Standard", "Large", "Extra large"], index=["Small", "Standard", "Large", "Extra large"].index(st.session_state.font_scale))
+    st.session_state.high_contrast = st.checkbox("High-contrast interface", value=st.session_state.high_contrast)
     st.divider()
     st.metric("Segments", len(st.session_state.segments))
     st.metric("TM entries", len(st.session_state.tm))
@@ -562,7 +570,11 @@ with st.sidebar:
         st.session_state.ai_for_segment = None
         st.success("Session project data deleted.")
 
-tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep", "Analytics & delivery"])
+scale = {"Small": "0.92", "Standard": "1", "Large": "1.12", "Extra large": "1.25"}[st.session_state.font_scale]
+contrast_css = "body { filter: contrast(1.12); }" if st.session_state.high_contrast else ""
+st.markdown(f"<style>html {{ font-size: {scale}em; }} {contrast_css}</style>", unsafe_allow_html=True)
+
+tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep", "Review & delivery", "Analytics & delivery"])
 
 with tabs[0]:
     st.subheader(f"{st.session_state.project_name} · {st.session_state.language_pair} · {st.session_state.genre}")
@@ -595,6 +607,17 @@ with tabs[0]:
                 st.markdown("**Translation-memory suggestions**")
                 for item, score in tm_suggestions:
                     st.write(f"{score}% · {item['source']} → {item['target']}")
+                if st.button("Use best TM match", key=f"use_tm_{selected_index}"):
+                    current["target"] = tm_suggestions[0][0]["target"]
+                    current["status"] = "Needs review"
+                    current["edit_count"] = current.get("edit_count", 0) + 1
+                    record_revision(selected_index, "", current["target"], "TM suggestion applied")
+                    st.success("TM suggestion copied into the editor. Review it before approval.")
+            with st.expander("Accessibility tools"):
+                if st.button("Read source aloud", key=f"speak_source_{selected_index}"):
+                    components.html(f"<script>window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance({json.dumps(current['source'])}));</script>", height=0)
+                if current.get("target") and st.button("Read target aloud", key=f"speak_target_{selected_index}"):
+                    components.html(f"<script>window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance({json.dumps(current['target'])}));</script>", height=0)
             if corpus_context:
                 with st.expander("Corpus evidence"):
                     for item in corpus_context:
@@ -623,12 +646,13 @@ with tabs[0]:
                 ec1, ec2 = st.columns(2)
                 new_status = ec1.selectbox("Segment status", ["Draft", "Needs review", "Reviewed", "Approved"], index=["Draft", "Needs review", "Reviewed", "Approved"].index(current.get("status", "Draft")))
                 new_effort = ec2.selectbox("Effort signal", ["Low", "Normal", "High", "Very high"], index=["Low", "Normal", "High", "Very high"].index(current.get("effort", "Normal")))
+                reviewer_comment = st.text_input("Reviewer / client comment", current.get("reviewer_comment", ""))
                 save_segment = st.form_submit_button("Save segment", type="primary")
             if save_segment:
                 if edited_target != current["target"]:
                     current["edit_count"] = current.get("edit_count", 0) + 1
                     record_revision(selected_index, current["target"], edited_target)
-                current["target"], current["status"], current["effort"] = edited_target, new_status, new_effort
+                current["target"], current["status"], current["effort"], current["reviewer_comment"] = edited_target, new_status, new_effort, reviewer_comment
                 current["last_edited_at"] = datetime.now().isoformat(timespec="seconds")
                 st.success("Segment saved.")
             st.caption(f"Source: {current['source']} · Edits: {current.get('edit_count', 0)}")
@@ -797,6 +821,37 @@ with tabs[5]:
     c2.info("Tip: build a glossary from the briefing before the assignment starts.")
 
 with tabs[6]:
+    st.subheader("Review and delivery")
+    st.write("Reviewers and clients can filter segments, leave comments, and approve delivery items.")
+    review_rows = []
+    for index, segment in enumerate(st.session_state.segments, 1):
+        review_rows.append({"#": index, "Source": segment["source"], "Target": segment.get("target", ""), "Translation status": segment.get("status", "Draft"), "Review status": segment.get("review_status", "Pending"), "Comment": segment.get("reviewer_comment", "")})
+    review_table = pd.DataFrame(review_rows)
+    if review_table.empty:
+        st.info("No segments are available for review yet.")
+    else:
+        review_filter = st.selectbox("Review filter", ["All", "Pending", "Changes requested", "Approved"])
+        if review_filter != "All":
+            review_table = review_table[review_table["Review status"] == review_filter]
+        st.dataframe(review_table, use_container_width=True, hide_index=True)
+        review_index = st.selectbox("Open review segment", ["—"] + [str(x) for x in review_table["#"].tolist()])
+        if review_index != "—":
+            row_index = int(review_index) - 1
+            segment = st.session_state.segments[row_index]
+            st.write(f"**Source:** {segment['source']}")
+            st.write(f"**Target:** {segment.get('target', '')}")
+            with st.form("review_form"):
+                review_comment = st.text_area("Comment", segment.get("reviewer_comment", ""))
+                review_status = st.selectbox("Review decision", ["Pending", "Changes requested", "Approved"], index=["Pending", "Changes requested", "Approved"].index(segment.get("review_status", "Pending")))
+                submit_review = st.form_submit_button("Save review")
+            if submit_review:
+                segment["reviewer_comment"] = review_comment
+                segment["review_status"] = review_status
+                if review_status == "Approved":
+                    segment["status"] = "Approved"
+                st.success("Review saved.")
+
+with tabs[7]:
     st.subheader("Translator analytics and delivery")
     table = segment_table()
     total_words = int(table["Words"].sum()) if not table.empty else 0
