@@ -265,6 +265,17 @@ def corpus_matches(query):
     return [x for x in st.session_state.corpus if all(word in x["text"].casefold() for word in words)] if words else []
 
 
+def fetch_webpage_text(url):
+    response = requests.get(url, timeout=15, headers={"User-Agent": "LinguaDesk/1.0"})
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    title = soup.title.get_text(strip=True) if soup.title else url
+    return title, text
+
+
 def concordance(query, window=90):
     results = []
     pattern = re.compile(re.escape(query), re.IGNORECASE)
@@ -517,4 +528,33 @@ with tabs[3]:
     url = st.text_input("Public webpage URL", placeholder="https://example.org/article")
     if st.button("Fetch webpage text"):
         try:
-            response = requests.get(url, timeout=15, headers={"User-Agent": "LinguaDesk/1.0"})
+            title, text = fetch_webpage_text(url)
+            st.session_state.corpus.append({"title": title, "text": text, "source": url})
+            st.success("Webpage text added to corpus.")
+        except Exception as exc:
+            st.error(f"Could not fetch that page: {exc}")
+    corpus_query = st.text_input("Search corpus", placeholder="term or phrase")
+    results = corpus_matches(corpus_query)
+    for row in results[:20]:
+        st.markdown(f"**{row['title']}** · {row['source']}\n\n{row['text'][:700]}…")
+    st.caption(f"{len(results)} matching text(s). Respect terms, robots rules, copyright, and privacy when collecting texts.")
+    if st.session_state.corpus:
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            concordance_term = st.text_input("Concordance term", placeholder="Show term in context")
+            concordance_rows = concordance(concordance_term) if concordance_term else []
+            if concordance_rows:
+                st.dataframe(pd.DataFrame(concordance_rows), use_container_width=True, hide_index=True)
+        with cc2:
+            st.write("Most frequent corpus words")
+            st.dataframe(corpus_frequency(), use_container_width=True, hide_index=True)
+
+with tabs[4]:
+    st.subheader("Quality assurance")
+    st.write("This lightweight checker catches missing numbers and preferred glossary terms before delivery.")
+    if st.session_state.segments:
+        qa = segment_table()
+        issue_rows = qa[qa["Status"] == "Needs review"]
+        if issue_rows.empty:
+            st.success("No issues found in the current segments.")
+        else:
