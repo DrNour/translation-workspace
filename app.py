@@ -113,6 +113,18 @@ def check_segment(source, target, terms):
         issues.append("Repeated whitespace")
     if source and not target.strip():
         issues.append("Target is empty")
+    source_tags = re.findall(r"<[^>]+>|\{[^}]+\}|\[[^]]+\]", source or "")
+    for tag in source_tags:
+        if tag not in (target or ""):
+            issues.append(f"Placeholder/tag missing: {tag}")
+    source_dates = re.findall(r"\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b", source or "")
+    for date_value in source_dates:
+        if date_value not in (target or ""):
+            issues.append(f"Date may be changed: {date_value}")
+    source_currency = re.findall(r"(?:[$€£¥]\s?\d[\d,.]*|\d[\d,.]*\s?(?:USD|EUR|AED|GBP))", source or "", flags=re.IGNORECASE)
+    for amount in source_currency:
+        if amount not in (target or ""):
+            issues.append(f"Currency/amount may be changed: {amount}")
     return issues
 
 
@@ -174,6 +186,38 @@ def import_xliff(upload):
         if source is not None:
             rows.append((" ".join(source.itertext()).strip(), " ".join(target.itertext()).strip() if target is not None else ""))
     return rows
+
+
+def import_tbx(upload):
+    root = ElementTree.fromstring(upload.getvalue())
+    rows = []
+    for entry in root.iter():
+        if entry.tag.split("}")[-1] != "termEntry":
+            continue
+        terms = []
+        for lang_set in entry.iter():
+            if lang_set.tag.split("}")[-1] == "langSet":
+                lang = lang_set.attrib.get("{http://www.w3.org/XML/1998/namespace}lang", "")
+                term = " ".join(lang_set.itertext()).strip()
+                if term:
+                    terms.append((lang, term))
+        if len(terms) >= 2:
+            rows.append({"source": terms[0][1], "target": terms[1][1], "notes": "Imported TBX", "genre": "General"})
+    return rows
+
+
+def local_transcribe_audio(audio_file, language_hint=""):
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise RuntimeError("Local transcription is optional. Install dependencies from requirements-local.txt to enable it.") from exc
+    model = WhisperModel("small", device="cpu", compute_type="int8")
+    audio_file.seek(0)
+    temporary_path = "/tmp/linguadesk_interpreter.wav"
+    with open(temporary_path, "wb") as handle:
+        handle.write(audio_file.getvalue())
+    segments, _ = model.transcribe(temporary_path, language=language_hint or None)
+    return " ".join(segment.text.strip() for segment in segments).strip()
 
 
 def export_xliff():
@@ -702,10 +746,10 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("Terminology glossary")
     st.write("Keep preferred terms visible while you work. The QA checker flags source terms whose approved target is missing.")
-    glossary_upload = st.file_uploader("Upload glossary (CSV, TSV, XLSX, JSON)", type=["csv", "tsv", "xlsx", "xls", "json"], key="glossary_upload")
+    glossary_upload = st.file_uploader("Upload glossary (TBX, CSV, TSV, XLSX, JSON)", type=["tbx", "csv", "tsv", "xlsx", "xls", "json"], key="glossary_upload")
     if glossary_upload and st.button("Import glossary"):
         try:
-            imported = import_table(glossary_upload)
+            imported = import_tbx(glossary_upload) if glossary_upload.name.lower().endswith(".tbx") else import_table(glossary_upload)
             st.session_state.terms.extend(imported)
             st.success(f"Imported {len(imported)} glossary entries.")
         except Exception as exc:
@@ -753,6 +797,17 @@ with tabs[2]:
         removed = len(st.session_state.tm) - len(unique)
         st.session_state.tm = list(unique.values())
         st.success(f"Removed {removed} duplicate entr{'y' if removed == 1 else 'ies'}.")
+    if st.session_state.tm and st.button("Prefill exact TM matches"):
+        filled = 0
+        for index, segment in enumerate(st.session_state.segments):
+            if not segment.get("target", "").strip():
+                matches = tm_matches(segment["source"], 1)
+                if matches and matches[0][1] >= 98:
+                    segment["target"] = matches[0][0]["target"]
+                    segment["status"] = "Needs review"
+                    record_revision(index, "", segment["target"], "Exact TM prefill")
+                    filled += 1
+        st.success(f"Prefilled {filled} exact TM match(es). Review before approval.")
     tm_query = st.text_input("Search translation memory", placeholder="Type a source segment…")
     for item, score in tm_matches(tm_query, 10):
         st.write(f"**{score}%** · {item['source']} → {item['target']} · *{item.get('domain', '')}*")
@@ -859,6 +914,13 @@ with tabs[5]:
             st.download_button("Download recording", audio.getvalue(), "interpreter_note.wav", "audio/wav")
             if st.session_state.privacy_mode == "Privacy-first":
                 st.info("Privacy-first mode is active. Cloud transcription is disabled.")
+                if st.button("Transcribe locally", key="local_transcribe"):
+                    try:
+                        transcript = local_transcribe_audio(audio, transcript_language if 'transcript_language' in locals() else "")
+                        st.session_state.interpreter_turns.append({"time": datetime.now().strftime("%H:%M:%S"), "speaker": speaker or "Unassigned", "type": "Local dictation", "note": transcript})
+                        st.success("Local transcript added to the turn log.")
+                    except Exception as exc:
+                        st.error(str(exc))
             else:
                 transcript_language = st.text_input("Language hint (optional)", placeholder="en or ar", key="transcript_language")
                 if st.button("Transcribe recording"):
@@ -936,9 +998,3 @@ with tabs[7]:
     st.subheader("Delivery notes")
     st.session_state.delivery_notes = st.text_area("Client-facing delivery notes", st.session_state.delivery_notes, height=120)
     st.download_button("Download delivery package report", (f"Project: {st.session_state.project_name}\nClient: {st.session_state.client_name}\nLanguage pair: {st.session_state.language_pair}\nGenre: {st.session_state.genre}\nSource words: {total_words}\nTranslated segments: {translated}\nApproved segments: {approved}\nQA flags: {flagged}\n\nNotes:\n{st.session_state.delivery_notes}\n").encode("utf-8"), "delivery_report.txt", "text/plain")
-    if st.session_state.revisions:
-        with st.expander("Revision history"):
-            st.dataframe(pd.DataFrame(st.session_state.revisions), use_container_width=True, hide_index=True)
-
-st.divider()
-st.caption("LinguaDesk MVP · Designed for translator and interpreter workflows · No data leaves this app")
