@@ -557,4 +557,24 @@ with tabs[4]:
         issue_rows = qa[qa["Status"] == "Needs review"]
         if issue_rows.empty:
             st.success("No issues found in the current segments.")
-        else:
+        if not issue_rows.empty:
+            st.warning(f"{len(issue_rows)} segment(s) need review.")
+            st.dataframe(issue_rows, use_container_width=True, hide_index=True)
+        csv = qa.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("Download QA report (CSV)", csv, "linguadesk_qa_report.csv", "text/csv")
+    else:
+        st.info("Add segments in the Translation workspace to run QA.")
+
+with tabs[5]:
+    st.subheader("Interpreter preparation")
+    st.write("Capture context, names, numbers, abbreviations, and questions before a live assignment.")
+    st.session_state.briefing_notes = st.text_area(
+        "Briefing notes",
+        value=st.session_state.briefing_notes,
+        height=260,
+        placeholder="Event purpose…\nKey people and names…\nTechnical terms…\nNumbers and dates to verify…\nQuestions for the client…",
+    )
+    c1, c2 = st.columns(2)
+    c1.download_button("Download briefing notes", st.session_state.briefing_notes.encode("utf-8"), "interpreter_briefing.txt", "text/plain")
+    c2.info("Tip: build a glossary from the briefing before the assignment starts.")
+
