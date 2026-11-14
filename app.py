@@ -2,6 +2,7 @@ import io
 import json
 import re
 from datetime import datetime
+from xml.etree import ElementTree
 
 import pandas as pd
 import requests
@@ -110,12 +111,15 @@ def import_table(upload):
 
 
 def import_tmx(upload):
-    root = BeautifulSoup(upload.getvalue(), "xml")
+    root = ElementTree.fromstring(upload.getvalue())
     rows = []
-    for unit in root.find_all("tu"):
-        variants = unit.find_all("tuv")
+    for unit in root.iter():
+        if unit.tag.split("}")[-1] != "tu":
+            continue
+        variants = [child for child in unit.iter() if child.tag.split("}")[-1] == "tuv"]
         if len(variants) >= 2:
-            rows.append({"source": variants[0].get_text(" ", strip=True), "target": variants[1].get_text(" ", strip=True), "domain": "Imported TM"})
+            texts = [" ".join(node.itertext()).strip() for node in variants[:2]]
+            rows.append({"source": texts[0], "target": texts[1], "domain": "Imported TM"})
     return rows
 
 
