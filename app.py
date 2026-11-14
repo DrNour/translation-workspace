@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import re
 from datetime import datetime
 from xml.etree import ElementTree
@@ -37,6 +38,8 @@ def init_state():
         "genre": "General",
         "project_name": "Client project",
         "language_pair": "English → Arabic",
+        "ai_suggestion": "",
+        "ai_for_segment": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -103,6 +106,77 @@ def add_segment(source, target):
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         })
+
+
+def split_into_segments(text):
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text or "") if p.strip()]
+    segments = []
+    for paragraph in paragraphs:
+        if len(paragraph) <= 600:
+            segments.append(paragraph)
+        else:
+            segments.extend(x.strip() for x in re.split(r"(?<=[.!?؟。])\s+", paragraph) if x.strip())
+    return segments
+
+
+def extract_document_text(upload):
+    name = upload.name.lower()
+    data = upload.getvalue()
+    if name.endswith(".txt"):
+        return data.decode("utf-8", errors="ignore")
+    if name.endswith(".docx"):
+        from docx import Document
+        return "\n\n".join(p.text.strip() for p in Document(io.BytesIO(data)).paragraphs if p.text.strip())
+    if name.endswith(".pdf"):
+        from pypdf import PdfReader
+        return "\n\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(data)).pages)
+    if name.endswith((".csv", ".tsv")):
+        frame = pd.read_csv(io.BytesIO(data), sep="\t" if name.endswith(".tsv") else ",")
+        return "\n\n".join(frame.astype(str).apply(" ".join, axis=1))
+    raise ValueError("Supported document types are TXT, DOCX, PDF, CSV, and TSV.")
+
+
+def openai_key():
+    try:
+        return st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    except Exception:
+        return os.getenv("OPENAI_API_KEY")
+
+
+def ai_translate(source, model, tm_context, corpus_context):
+    key = openai_key()
+    if not key:
+        raise ValueError("Add OPENAI_API_KEY to Streamlit secrets before using AI translation.")
+    prompt = f"""Translate the source segment into {st.session_state.language_pair.split(' → ')[-1]}.
+Genre: {st.session_state.genre}.
+Preserve meaning, numbers, names, formatting, and register. Use the terminology and examples as evidence, but do not copy an example when it does not fit. Return only the translation.
+
+Approved terminology:
+{json.dumps(st.session_state.terms, ensure_ascii=False)}
+
+Translation-memory examples:
+{tm_context or 'None'}
+
+Corpus examples:
+{corpus_context or 'None'}
+
+Source segment:
+{source}"""
+    response = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json={"model": model, "instructions": "You are a careful professional translator.", "input": prompt},
+        timeout=90,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("output_text"):
+        return payload["output_text"].strip()
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            if content.get("text"):
+                return content["text"].strip()
+    raise ValueError("The AI service returned no translation text.")
 
 
 def import_table(upload):
@@ -215,14 +289,45 @@ tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corp
 with tabs[0]:
     st.subheader(f"{st.session_state.project_name} · {st.session_state.language_pair} · {st.session_state.genre}")
     st.write("Edit, classify, and review segments in a CAT-style workflow. Glossary, TM, and QA signals update automatically.")
+    document_upload = st.file_uploader("Upload document to segment", type=["txt", "docx", "pdf", "csv", "tsv"], key="document_upload")
+    if document_upload and st.button("Import document as segments"):
+        try:
+            text = extract_document_text(document_upload)
+            imported_segments = split_into_segments(text)
+            for segment_text in imported_segments:
+                add_segment(segment_text, "")
+            st.success(f"Imported {len(imported_segments)} segments from {document_upload.name}.")
+        except Exception as exc:
+            st.error(f"Could not import document: {exc}")
     if st.session_state.segments:
         segment_options = [f"{i + 1}. {x['source'][:80]}" for i, x in enumerate(st.session_state.segments)]
         selected_segment = st.selectbox("Open segment", ["—"] + segment_options, key="selected_segment")
         if selected_segment != "—":
             selected_index = segment_options.index(selected_segment)
             current = st.session_state.segments[selected_index]
+            tm_suggestions = tm_matches(current["source"], 5)
+            corpus_context = concordance(current["source"].split()[0], 3) if st.session_state.corpus and current["source"].split() else []
+            if tm_suggestions:
+                st.markdown("**Translation-memory suggestions**")
+                for item, score in tm_suggestions:
+                    st.write(f"{score}% · {item['source']} → {item['target']}")
+            if corpus_context:
+                with st.expander("Corpus evidence"):
+                    for item in corpus_context:
+                        st.write(f"{item['Context']} · {item['Document']}")
+            ai_model = st.text_input("AI model", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"), key="ai_model")
+            if st.button("Generate AI translation", type="secondary"):
+                try:
+                    tm_context = "\n".join(f"{item['source']} → {item['target']} ({score}%)" for item, score in tm_suggestions)
+                    corpus_text = "\n".join(item["Context"] for item in corpus_context)
+                    st.session_state.ai_suggestion = ai_translate(current["source"], ai_model, tm_context, corpus_text)
+                    st.session_state.ai_for_segment = selected_index
+                    st.success("AI suggestion generated. Review it before accepting.")
+                except Exception as exc:
+                    st.error(str(exc))
+            suggested_target = st.session_state.ai_suggestion if st.session_state.ai_for_segment == selected_index else current["target"]
             with st.form("editor_form"):
-                edited_target = st.text_area("Target editor", current["target"], height=130)
+                edited_target = st.text_area("Target editor", suggested_target, height=130)
                 ec1, ec2 = st.columns(2)
                 new_status = ec1.selectbox("Segment status", ["Draft", "Needs review", "Reviewed", "Approved"], index=["Draft", "Needs review", "Reviewed", "Approved"].index(current.get("status", "Draft")))
                 new_effort = ec2.selectbox("Effort signal", ["Low", "Normal", "High", "Very high"], index=["Low", "Normal", "High", "Very high"].index(current.get("effort", "Normal")))
@@ -393,15 +498,3 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Interpreter preparation")
     st.write("Capture context, names, numbers, abbreviations, and questions before a live assignment.")
-    st.session_state.briefing_notes = st.text_area(
-        "Briefing notes",
-        value=st.session_state.briefing_notes,
-        height=260,
-        placeholder="Event purpose…\nKey people and names…\nTechnical terms…\nNumbers and dates to verify…\nQuestions for the client…",
-    )
-    c1, c2 = st.columns(2)
-    c1.download_button("Download briefing notes", st.session_state.briefing_notes.encode("utf-8"), "interpreter_briefing.txt", "text/plain")
-    c2.info("Tip: build a glossary from the briefing before the assignment starts.")
-
-st.divider()
-st.caption("LinguaDesk MVP · Designed for translator and interpreter workflows · No data leaves this app")

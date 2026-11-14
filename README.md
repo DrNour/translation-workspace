@@ -14,6 +14,9 @@ LinguaDesk is a Streamlit-based translator and interpreter workbench for termino
 - Public webpage text extraction for corpus research
 - CAT-style segment editing with statuses, effort signals, edit counts, and genre labels
 - DOCX translation export
+- TXT, DOCX, PDF, CSV, and TSV document upload with automatic segmentation
+- Per-segment TM, corpus, and AI translation suggestions
+- Optional OpenAI translation through a Streamlit secret (`OPENAI_API_KEY`)
 - Concordance-in-context search and corpus word-frequency analysis
 - Duplicate TM cleanup and project-level analytics signals
 - QA checks for missing or changed numbers
@@ -39,6 +42,16 @@ streamlit run app.py
 4. Deploy.
 
 The app stores data in the current browser session. For a production version, add authentication, persistent storage, stronger document segmentation, and a controlled crawling queue. Only collect web content where you have permission and comply with applicable terms, robots rules, copyright, and privacy requirements.
+
+### Enable AI translation
+
+In Streamlit Community Cloud, open **App settings → Secrets** and add:
+
+```toml
+OPENAI_API_KEY = "your-api-key"
+```
+
+The key is used only when a translator explicitly clicks **Generate AI translation**. AI output is presented as a suggestion and is never accepted automatically.
 
 ## Suggested next milestones
 
