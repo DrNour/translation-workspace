@@ -3,6 +3,17 @@ import os
 import requests
 
 
+def _raise_with_message(response):
+    if response.ok:
+        return
+    try:
+        details = response.json()
+        message = details.get("msg") or details.get("message") or details.get("error_description") or details.get("error")
+    except ValueError:
+        message = response.text.strip()
+    raise RuntimeError(f"Supabase authentication error ({response.status_code}): {message or 'request rejected'}")
+
+
 def config():
     try:
         import streamlit as st
@@ -26,7 +37,7 @@ def sign_in(email, password):
         json={"email": email, "password": password},
         timeout=20,
     )
-    response.raise_for_status()
+    _raise_with_message(response)
     return response.json()
 
 
@@ -38,7 +49,7 @@ def sign_up(email, password):
         json={"email": email, "password": password},
         timeout=20,
     )
-    response.raise_for_status()
+    _raise_with_message(response)
     return response.json()
 
 
