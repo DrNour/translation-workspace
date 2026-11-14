@@ -21,6 +21,28 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] {
+        min-width: 330px;
+        max-width: 380px;
+    }
+    [data-testid="stSidebarContent"] {
+        padding-left: 1.25rem;
+        padding-right: 1.25rem;
+        overflow-x: hidden;
+    }
+    [data-testid="stSidebar"] [data-testid="stTextInput"] input,
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] {
+        width: 100%;
+        box-sizing: border-box;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 DEFAULT_TERMS = [
     {"source": "artificial intelligence", "target": "الذكاء الاصطناعي", "notes": "Use consistently", "genre": "General"},
@@ -796,19 +818,3 @@ with tabs[6]:
     if replace_all and search_text:
         changed = 0
         for index, segment in enumerate(st.session_state.segments):
-            new_target = segment.get("target", "").replace(search_text, replace_text)
-            if new_target != segment.get("target", ""):
-                record_revision(index, segment.get("target", ""), new_target, "search and replace")
-                segment["target"] = new_target
-                segment["edit_count"] = segment.get("edit_count", 0) + 1
-                changed += 1
-        st.success(f"Updated {changed} segment(s).")
-    st.subheader("Delivery notes")
-    st.session_state.delivery_notes = st.text_area("Client-facing delivery notes", st.session_state.delivery_notes, height=120)
-    st.download_button("Download delivery package report", (f"Project: {st.session_state.project_name}\nClient: {st.session_state.client_name}\nLanguage pair: {st.session_state.language_pair}\nGenre: {st.session_state.genre}\nSource words: {total_words}\nTranslated segments: {translated}\nApproved segments: {approved}\nQA flags: {flagged}\n\nNotes:\n{st.session_state.delivery_notes}\n").encode("utf-8"), "delivery_report.txt", "text/plain")
-    if st.session_state.revisions:
-        with st.expander("Revision history"):
-            st.dataframe(pd.DataFrame(st.session_state.revisions), use_container_width=True, hide_index=True)
-
-st.divider()
-st.caption("LinguaDesk MVP · Designed for translator and interpreter workflows · No data leaves this app")
