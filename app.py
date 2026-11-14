@@ -62,12 +62,18 @@ def check_segment(source, target, terms):
         if source_term and source_term.casefold() in (source or "").casefold():
             if target_term and target_term.casefold() not in lowered_target:
                 issues.append(f"Glossary term not used: {source_term} → {target_term}")
+    if source.strip() and target.strip() and source.strip()[-1:] in ".?!" and target.strip()[-1:] not in ".?!":
+        issues.append("Sentence-final punctuation may be missing")
+    if "  " in (target or ""):
+        issues.append("Repeated whitespace")
+    if source and not target.strip():
+        issues.append("Target is empty")
     return issues
 
 
 def segment_table():
     if not st.session_state.segments:
-        return pd.DataFrame(columns=["#", "Source", "Target", "Status", "Issues"])
+        return pd.DataFrame(columns=["#", "Source", "Target", "Status", "Issues", "Words", "Effort", "Genre"])
     rows = []
     for index, segment in enumerate(st.session_state.segments, start=1):
         issues = check_segment(segment["source"], segment["target"], st.session_state.terms)
@@ -75,8 +81,11 @@ def segment_table():
             "#": index,
             "Source": segment["source"],
             "Target": segment["target"],
-            "Status": "Needs review" if issues else "Ready",
+            "Status": segment.get("status", "Needs review" if issues else "Ready"),
             "Issues": "; ".join(issues),
+            "Words": len(segment["source"].split()),
+            "Effort": segment.get("effort", "Normal"),
+            "Genre": segment.get("genre", st.session_state.genre),
         })
     return pd.DataFrame(rows)
 
@@ -88,6 +97,10 @@ def add_segment(source, target):
             "source": source,
             "target": target,
             "genre": st.session_state.genre,
+            "status": "Draft" if not target.strip() else "Needs review",
+            "effort": "Normal",
+            "edit_count": 0,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         })
 
@@ -135,6 +148,34 @@ def corpus_matches(query):
     return [x for x in st.session_state.corpus if all(word in x["text"].casefold() for word in words)] if words else []
 
 
+def concordance(query, window=90):
+    results = []
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    for document in st.session_state.corpus:
+        for match in pattern.finditer(document["text"]):
+            start, end = max(0, match.start() - window), min(len(document["text"]), match.end() + window)
+            results.append({"Context": document["text"][start:end], "Document": document["title"], "Source": document["source"]})
+    return results
+
+
+def corpus_frequency():
+    words = re.findall(r"[\w’'-]{3,}", " ".join(x["text"].casefold() for x in st.session_state.corpus), flags=re.UNICODE)
+    return pd.Series(words).value_counts().head(50).rename_axis("Word").reset_index(name="Frequency") if words else pd.DataFrame(columns=["Word", "Frequency"])
+
+
+def export_docx():
+    from docx import Document
+    document = Document()
+    document.add_heading(st.session_state.project_name, 0)
+    document.add_paragraph(f"{st.session_state.language_pair} · {st.session_state.genre}")
+    for segment in st.session_state.segments:
+        document.add_paragraph(segment["source"], style="Intense Quote")
+        document.add_paragraph(segment["target"])
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def project_json():
     payload = {
         "project": "LinguaDesk",
@@ -173,7 +214,27 @@ tabs = st.tabs(["Translation workspace", "Glossary", "Translation memory", "Corp
 
 with tabs[0]:
     st.subheader(f"{st.session_state.project_name} · {st.session_state.language_pair} · {st.session_state.genre}")
-    st.write("Add source segments and working translations. Glossary and QA checks update automatically.")
+    st.write("Edit, classify, and review segments in a CAT-style workflow. Glossary, TM, and QA signals update automatically.")
+    if st.session_state.segments:
+        segment_options = [f"{i + 1}. {x['source'][:80]}" for i, x in enumerate(st.session_state.segments)]
+        selected_segment = st.selectbox("Open segment", ["—"] + segment_options, key="selected_segment")
+        if selected_segment != "—":
+            selected_index = segment_options.index(selected_segment)
+            current = st.session_state.segments[selected_index]
+            with st.form("editor_form"):
+                edited_target = st.text_area("Target editor", current["target"], height=130)
+                ec1, ec2 = st.columns(2)
+                new_status = ec1.selectbox("Segment status", ["Draft", "Needs review", "Reviewed", "Approved"], index=["Draft", "Needs review", "Reviewed", "Approved"].index(current.get("status", "Draft")))
+                new_effort = ec2.selectbox("Effort signal", ["Low", "Normal", "High", "Very high"], index=["Low", "Normal", "High", "Very high"].index(current.get("effort", "Normal")))
+                save_segment = st.form_submit_button("Save segment", type="primary")
+            if save_segment:
+                if edited_target != current["target"]:
+                    current["edit_count"] = current.get("edit_count", 0) + 1
+                current["target"], current["status"], current["effort"] = edited_target, new_status, new_effort
+                current["last_edited_at"] = datetime.now().isoformat(timespec="seconds")
+                st.success("Segment saved.")
+            st.caption(f"Source: {current['source']} · Edits: {current.get('edit_count', 0)}")
+    st.download_button("Export translated document (DOCX)", export_docx(), "linguadesk_translation.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     with st.form("segment_form", clear_on_submit=True):
         source = st.text_area("Source segment", height=100, placeholder="Paste a sentence or segment here…")
         target = st.text_area("Translation", height=100, placeholder="Write or paste the translation here…")
@@ -250,6 +311,11 @@ with tabs[2]:
             st.success(f"Imported {len(imported)} entries.")
         except Exception as exc:
             st.error(str(exc))
+    if st.session_state.tm and st.button("Remove duplicate TM entries"):
+        unique = {(x.get("source", "").strip().casefold(), x.get("target", "").strip()): x for x in st.session_state.tm}
+        removed = len(st.session_state.tm) - len(unique)
+        st.session_state.tm = list(unique.values())
+        st.success(f"Removed {removed} duplicate entr{'y' if removed == 1 else 'ies'}.")
     tm_query = st.text_input("Search translation memory", placeholder="Type a source segment…")
     for item, score in tm_matches(tm_query, 10):
         st.write(f"**{score}%** · {item['source']} → {item['target']} · *{item.get('domain', '')}*")
@@ -257,7 +323,7 @@ with tabs[2]:
         st.dataframe(pd.DataFrame(st.session_state.tm), use_container_width=True, hide_index=True)
         st.download_button("Export TM as CSV", pd.DataFrame(st.session_state.tm).to_csv(index=False).encode("utf-8-sig"), "linguadesk_tm.csv", "text/csv")
 
-with tabs[5]:
+with tabs[3]:
     st.subheader("Corpus research and text collection")
     st.write("Upload local reference texts or extract readable text from public webpages for terminology research.")
     corpus_upload = st.file_uploader("Upload corpus text", type=["txt", "csv", "json", "docx"], key="corpus_upload")
@@ -297,6 +363,16 @@ with tabs[5]:
     for row in results[:20]:
         st.markdown(f"**{row['title']}** · {row['source']}\n\n{row['text'][:700]}…")
     st.caption(f"{len(results)} matching text(s). Respect terms, robots rules, copyright, and privacy when collecting texts.")
+    if st.session_state.corpus:
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            concordance_term = st.text_input("Concordance term", placeholder="Show term in context")
+            concordance_rows = concordance(concordance_term) if concordance_term else []
+            if concordance_rows:
+                st.dataframe(pd.DataFrame(concordance_rows), use_container_width=True, hide_index=True)
+        with cc2:
+            st.write("Most frequent corpus words")
+            st.dataframe(corpus_frequency(), use_container_width=True, hide_index=True)
 
 with tabs[4]:
     st.subheader("Quality assurance")
@@ -314,7 +390,7 @@ with tabs[4]:
     else:
         st.info("Add segments in the Translation workspace to run QA.")
 
-with tabs[3]:
+with tabs[5]:
     st.subheader("Interpreter preparation")
     st.write("Capture context, names, numbers, abbreviations, and questions before a live assignment.")
     st.session_state.briefing_notes = st.text_area(

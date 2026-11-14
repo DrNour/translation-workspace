@@ -12,6 +12,10 @@ LinguaDesk is a Streamlit-based translator and interpreter workbench for termino
 - Fuzzy translation-memory matching while translating
 - Local corpus uploads and searchable corpus snippets
 - Public webpage text extraction for corpus research
+- CAT-style segment editing with statuses, effort signals, edit counts, and genre labels
+- DOCX translation export
+- Concordance-in-context search and corpus word-frequency analysis
+- Duplicate TM cleanup and project-level analytics signals
 - QA checks for missing or changed numbers
 - Interpreter preparation notes
 - CSV QA report export
