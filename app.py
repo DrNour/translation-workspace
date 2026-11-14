@@ -11,6 +11,9 @@ import streamlit as st
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 
+from supabase_client import configured as supabase_configured
+from supabase_client import latest_project, save_project, sign_in, sign_up
+
 
 st.set_page_config(
     page_title="LinguaDesk — Translator & Interpreter Workbench",
@@ -45,6 +48,8 @@ def init_state():
         "revisions": [],
         "client_name": "",
         "delivery_notes": "",
+        "supabase_access_token": "",
+        "supabase_email": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -369,6 +374,26 @@ def project_json():
 
 init_state()
 
+if supabase_configured() and not st.session_state.supabase_access_token:
+    st.title("🌐 LinguaDesk")
+    st.info("Commercial mode is enabled. Sign in to access protected projects.")
+    with st.form("auth_form"):
+        auth_email = st.text_input("Email")
+        auth_password = st.text_input("Password", type="password")
+        auth_action = st.radio("Account action", ["Sign in", "Create account"], horizontal=True)
+        auth_submit = st.form_submit_button(auth_action, type="primary")
+    if auth_submit:
+        try:
+            auth_result = sign_up(auth_email, auth_password) if auth_action == "Create account" else sign_in(auth_email, auth_password)
+            if auth_result.get("access_token"):
+                st.session_state.supabase_access_token = auth_result["access_token"]
+                st.session_state.supabase_email = auth_email
+                st.rerun()
+            st.success("Check your email to confirm the account, then sign in.")
+        except Exception as exc:
+            st.error(f"Authentication failed: {exc}")
+    st.stop()
+
 st.title("🌐 LinguaDesk")
 st.caption("A focused workbench for translators and interpreters")
 
@@ -394,6 +419,29 @@ with st.sidebar:
     ready_count = int((segment_table()["Status"] == "Ready").sum()) if st.session_state.segments else 0
     st.metric("Ready", ready_count)
     st.download_button("Download project JSON", project_json(), f"{st.session_state.project_name.replace(' ', '_')}.json", "application/json")
+    if st.session_state.supabase_access_token:
+        st.caption(f"Signed in as {st.session_state.supabase_email}")
+        if st.button("Save project to cloud"):
+            try:
+                save_project(st.session_state.supabase_access_token, st.session_state.project_name, json.loads(project_json().decode("utf-8")))
+                st.success("Project saved to Supabase.")
+            except Exception as exc:
+                st.error(f"Cloud save failed: {exc}")
+        if st.button("Load latest cloud project"):
+            try:
+                latest = latest_project(st.session_state.supabase_access_token)
+                if latest:
+                    load_project(json.dumps(latest["payload"], ensure_ascii=False).encode("utf-8"))
+                    st.success(f"Loaded {latest['name']}.")
+                    st.rerun()
+                else:
+                    st.info("No cloud projects found.")
+            except Exception as exc:
+                st.error(f"Cloud load failed: {exc}")
+        if st.button("Sign out"):
+            st.session_state.supabase_access_token = ""
+            st.session_state.supabase_email = ""
+            st.rerun()
     project_upload = st.file_uploader("Load project JSON", type=["json"], key="project_upload")
     if project_upload and st.button("Load project"):
         try:

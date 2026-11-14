@@ -65,6 +65,17 @@ The key is used only when a translator explicitly clicks **Generate AI translati
 
 The app never sends the full uploaded document for translation. Sensitive projects should still be run on an approved private deployment or locally, with the privacy mode and client permissions confirmed before use.
 
+### Commercial Supabase mode
+
+The repository includes `supabase_schema.sql` and an optional Supabase authentication/cloud-project layer. Run the SQL file in the Supabase SQL Editor, then add these values to Streamlit Cloud Secrets:
+
+```toml
+SUPABASE_URL = "https://your-project.supabase.co"
+SUPABASE_ANON_KEY = "your-anon-key"
+```
+
+When these secrets are present, LinguaDesk requires authentication and enables protected project save/load. When they are absent, it runs in local demo mode. Never put a Supabase service-role key in the app or repository.
+
 ## Suggested next milestones
 
 1. Import DOCX/TXT files and split them into segments.
