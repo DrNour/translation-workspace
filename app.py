@@ -350,6 +350,27 @@ Source segment:
     raise ValueError("The AI service returned no translation text.")
 
 
+
+def ai_humanize(source, target, model, privacy_mode):
+    """Improve naturalness while preserving meaning and terminology."""
+    key = openai_key()
+    if privacy_mode == "Privacy-first": raise ValueError("Privacy-first mode blocks external AI requests.")
+    if not key: raise ValueError("Add OPENAI_API_KEY to Streamlit secrets before using AI humanizing.")
+    replacements = []
+    if privacy_mode == "Redacted AI":
+        source, a = redact_text(source); target, b = redact_text(target); replacements = a + b
+    prompt = f"""Humanize the target translation for a {st.session_state.genre} text in {st.session_state.language_pair.split(' → ')[-1]}.
+Preserve meaning, facts, numbers, names, terminology, modality, and certainty. Do not add information or remove content. Improve naturalness, grammar, register, and readability. Return only the revised translation.
+SOURCE:\n{source}\nCURRENT TRANSLATION:\n{target}"""
+    response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}, json={"model": model, "instructions": "You are a careful professional translation editor. Preserve redaction placeholders exactly.", "input": prompt, "store": False}, timeout=90)
+    response.raise_for_status(); payload = response.json(); output = payload.get("output_text", "")
+    if not output:
+        for item in payload.get("output", []):
+            for content in item.get("content", []):
+                if content.get("text"): output = content["text"]; break
+    if not output: raise ValueError("The AI service returned no humanized translation.")
+    return restore_redactions(output.strip(), replacements)
+
 def transcribe_audio(audio_file, language_hint=""):
     key = openai_key()
     if not key:
@@ -636,7 +657,7 @@ scale = {"Small": "0.92", "Standard": "1", "Large": "1.12", "Extra large": "1.25
 contrast_css = "body { filter: contrast(1.12); }" if st.session_state.high_contrast else ""
 st.markdown(f"<style>html {{ font-size: {scale}em; }} {contrast_css}</style>", unsafe_allow_html=True)
 
-tabs = st.tabs(["Dashboard & files", "Translation workspace", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep", "Review & delivery", "Analytics & delivery"])
+tabs = st.tabs(["Dashboard & files", "Translation workspace", "AI Translation & Humanizing", "Glossary", "Translation memory", "Corpus & scraping", "QA checker", "Interpreter prep", "Review & delivery", "Analytics & delivery"])
 
 with tabs[0]:
     st.subheader("Project dashboard")
@@ -1032,6 +1053,37 @@ with tabs[8]:
     if st.session_state.revisions:
         with st.expander("Revision history"):
             st.dataframe(pd.DataFrame(st.session_state.revisions), use_container_width=True, hide_index=True)
+
+
+with tabs[2]:
+    st.subheader("AI Translation & Humanizing")
+    st.write("Generate a translation or improve an existing target while preserving meaning, terminology, and translator control.")
+    st.info("Privacy-first mode blocks external AI. Redacted AI removes common identifiers before the request. Review every suggestion before accepting it.")
+    ai_mode = st.selectbox("AI operation", ["Translate a source segment", "Humanize the current translation"], key="linguadesk_ai_operation")
+    ai_model = st.text_input("AI model", value="gpt-4.1-mini", key="linguadesk_ai_model")
+    ai_source = st.text_area("Source text", height=180, key="linguadesk_ai_source")
+    ai_target = st.text_area("Current translation (optional)", height=180, key="linguadesk_ai_target")
+    if st.button("Run AI translation / humanizing", type="primary", key="linguadesk_run_ai"):
+        try:
+            with st.spinner("Running the AI assistant..."):
+                if ai_mode == "Translate a source segment":
+                    tm_context = "\n".join(f"{x.get('source', '')} → {x.get('target', '')}" for x in st.session_state.tm[:8])
+                    corpus_context = "\n".join(x.get("text", "")[:500] for x in st.session_state.corpus[:5])
+                    result = ai_translate(ai_source, ai_model, tm_context, corpus_context, st.session_state.privacy_mode)
+                else:
+                    if not ai_target.strip(): raise ValueError("Enter a current translation before humanizing it.")
+                    result = ai_humanize(ai_source, ai_target, ai_model, st.session_state.privacy_mode)
+            st.session_state.ai_suggestion = result
+            st.session_state.ai_for_segment = None
+            st.session_state.ai_audit_log.append({"time": datetime.now().isoformat(timespec="seconds"), "operation": ai_mode, "model": ai_model, "privacy_mode": st.session_state.privacy_mode, "source_words": len(ai_source.split())})
+            st.success("AI suggestion generated. Review it before using it.")
+        except Exception as exc: st.error(str(exc))
+    if st.session_state.ai_suggestion:
+        st.subheader("AI suggestion")
+        st.text_area("Suggested translation", st.session_state.ai_suggestion, height=180, key="linguadesk_ai_result")
+        st.caption("The suggestion is stored in the session audit log. It is not automatically inserted into a project segment.")
+        if st.button("Add suggestion as a new translation segment", key="linguadesk_accept_ai") and ai_source.strip():
+            add_segment(ai_source, st.session_state.ai_suggestion); st.success("Added as a draft segment. Review it in the Translation workspace.")
 
 st.divider()
 st.caption("LinguaDesk MVP · Designed for translator and interpreter workflows · No data leaves this app")
