@@ -351,6 +351,32 @@ Source segment:
 
 
 
+def ai_agent_translate(source, model, tm_context, corpus_context, privacy_mode):
+    """Generate, QA-check, and optionally revise a translation before human approval."""
+    candidate = ai_translate(source, model, tm_context, corpus_context, privacy_mode)
+    iterations = []
+    for attempt in range(2):
+        issues = check_segment(source, candidate, st.session_state.terms)
+        iterations.append({"attempt": attempt + 1, "issues": issues, "translation": candidate})
+        if not issues or attempt == 1:
+            break
+        candidate = ai_humanize(source, candidate, model, privacy_mode)
+    return candidate, iterations
+
+
+def ai_agent_translate(source, model, tm_context, corpus_context, privacy_mode):
+    """Generate, QA-check, and optionally revise a translation before human approval."""
+    candidate = ai_translate(source, model, tm_context, corpus_context, privacy_mode)
+    iterations = []
+    for attempt in range(2):
+        issues = check_segment(source, candidate, st.session_state.terms)
+        iterations.append({"attempt": attempt + 1, "issues": issues, "translation": candidate})
+        if not issues or attempt == 1:
+            break
+        candidate = ai_humanize(source, candidate, model, privacy_mode)
+    return candidate, iterations
+
+
 def ai_humanize(source, target, model, privacy_mode):
     """Improve naturalness while preserving meaning and terminology."""
     key = openai_key()
@@ -750,6 +776,33 @@ with tabs[1]:
                     st.success("AI suggestion generated. Review it before accepting.")
                 except Exception as exc:
                     st.error(str(exc))
+            if st.session_state.privacy_mode != "Privacy-first":
+                if st.button("Run AI translation agent", type="primary", disabled=not ai_confirmed, key=f"agent_translate_{selected_index}"):
+                    try:
+                        tm_context = "\\n".join(f"{item['source']} → {item['target']} ({score}%)" for item, score in tm_suggestions)
+                        corpus_text = "\\n".join(item["Context"] for item in corpus_context)
+                        with st.spinner("Agent is translating and checking the segment…"):
+                            agent_translation, agent_steps = ai_agent_translate(current["source"], ai_model, tm_context, corpus_text, st.session_state.privacy_mode)
+                        st.session_state.ai_suggestion = agent_translation
+                        st.session_state.ai_for_segment = selected_index
+                        st.session_state.ai_audit_log.append({
+                            "time": datetime.now().isoformat(timespec="seconds"),
+                            "segment": selected_index + 1,
+                            "mode": st.session_state.privacy_mode,
+                            "model": ai_model,
+                            "workflow": "agent",
+                            "qa_attempts": len(agent_steps),
+                            "final_issues": agent_steps[-1]["issues"],
+                        })
+                        if agent_steps[-1]["issues"]:
+                            st.warning("The agent produced a suggestion, but QA still found issues. Review them before accepting.")
+                            for issue in agent_steps[-1]["issues"]:
+                                st.write(f"- {issue}")
+                        else:
+                            st.success("Agent translation generated and passed LinguaDesk QA. Review it before accepting.")
+                    except Exception as exc:
+                        st.error(str(exc))
+
             suggested_target = st.session_state.ai_suggestion if st.session_state.ai_for_segment == selected_index else current["target"]
             with st.form("editor_form"):
                 edited_target = st.text_area("Target editor", suggested_target, height=130)
